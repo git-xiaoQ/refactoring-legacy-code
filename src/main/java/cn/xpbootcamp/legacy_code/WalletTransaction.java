@@ -16,6 +16,13 @@ public class WalletTransaction {
     private String orderId;
     private Long createdTimestamp;
     private Double amount;
+    private int days;
+    final static int DAYS =1728000000;
+
+    public void updateStatus(STATUS status) {
+        this.status = status;
+    }
+
     private STATUS status;
     private String walletTransactionId;
 
@@ -38,39 +45,60 @@ public class WalletTransaction {
     }
 
     public boolean execute() throws InvalidTransactionException {
-        if (buyerId == null || (sellerId == null || amount < 0.0)) {
+        if (isInvalidTransaction()) {
             throw new InvalidTransactionException("This is an invalid transaction");
         }
-        if (status == STATUS.EXECUTED) return true;
-        boolean isLocked = false;
+        if (isExpired()) return true;
         try {
-            isLocked = RedisDistributedLock.getSingletonInstance().lock(id);
-
             // 锁定未成功，返回false
-            if (!isLocked) {
+            if (!isLocked(id)) {
                 return false;
             }
+
             if (status == STATUS.EXECUTED) return true; // double check
-            long executionInvokedTimestamp = System.currentTimeMillis();
+
             // 交易超过20天
-            if (executionInvokedTimestamp - createdTimestamp > 1728000000) {
-                this.status = STATUS.EXPIRED;
+            if (isOutOf(DAYS)) {
+                updateStatus(STATUS.EXPIRED);
                 return false;
             }
             WalletService walletService = new WalletServiceImpl();
+
             String walletTransactionId = walletService.moveMoney(id, buyerId, sellerId, amount);
             if (walletTransactionId != null) {
                 this.walletTransactionId = walletTransactionId;
-                this.status = STATUS.EXECUTED;
+                updateStatus(STATUS.EXECUTED);
                 return true;
             } else {
-                this.status = STATUS.FAILED;
+                updateStatus(STATUS.FAILED);
                 return false;
             }
         } finally {
-            if (isLocked) {
-                RedisDistributedLock.getSingletonInstance().unlock(id);
-            }
+            unlock(id);
+        }
+    }
+
+    private boolean isInvalidTransaction() {
+        return buyerId == null || (sellerId == null || amount < 0.0);
+    }
+
+    private boolean isExpired() {
+        return status == STATUS.EXECUTED;
+    }
+    private boolean isOutOf(int days) {
+        long executionInvokedTimestamp = System.currentTimeMillis();
+        return  executionInvokedTimestamp - createdTimestamp >days ;
+    }
+
+    private boolean isLocked(String id) {
+        RedisDistributedLock redisDistributedLock = RedisDistributedLock.getSingletonInstance();
+        return redisDistributedLock.lock(id);
+    }
+
+    private void unlock(String id) {
+        RedisDistributedLock redisDistributedLock = RedisDistributedLock.getSingletonInstance();
+        if (isLocked(id)) {
+            redisDistributedLock.unlock(id);
         }
     }
 
